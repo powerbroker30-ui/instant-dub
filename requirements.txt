@@ -4,4 +4,4 @@ torch
 sentencepiece
 gTTS
 moviepy==1.0.3
-whisper
+openai-whisper
