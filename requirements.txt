@@ -1,7 +1,10 @@
 streamlit
-transformers>=4.44.0
-torch>=2.1.0
-gTTS==2.5.1
+transformers
+torch
+gTTS
 moviepy==1.0.3
 imageio
 imageio-ffmpeg
+openai-whisper
+numba
+llvmlite
