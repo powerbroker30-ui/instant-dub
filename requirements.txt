@@ -2,6 +2,7 @@ streamlit
 transformers
 torch
 gTTS
-moviepy==1.0.3
-imageio
-imageio-ffmpeg
+moviepy
+openai-whisper
+numba
+llvmlite
