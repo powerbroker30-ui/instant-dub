@@ -1,97 +1,65 @@
 import streamlit as st
-from transformers import pipeline
-from gtts import gTTS
-import moviepy.editor as mp
-import tempfile
 import os
-import time
+from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
+import torch
+from gtts import gTTS
+from moviepy.editor import VideoFileClip, AudioFileClip
+import tempfile
+import whisper
 
-st.set_page_config(page_title="Instant Dub App", page_icon="🎬", layout="centered")
-st.title("🎬 Instant Dub (3.13-compatible)")
-st.write("Upload a video (any language), pick a target language, and get a dubbed version!")
+# Load Whisper model for transcription
+whisper_model = whisper.load_model("base")
 
-# Load a Speech-to-Text model using transformers (works on Py 3.13)
-@st.cache_resource
-def load_stt():
-    return pipeline("automatic-speech-recognition", model="openai/whisper-small")
+# Load universal translation model
+model_name = "facebook/m2m100_418M"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+translator = pipeline("translation", model=model, tokenizer=tokenizer)
 
-stt_pipeline = load_stt()
+# Streamlit UI
+st.title("Instant Dub App")
 
-# Translation mapping
-translation_models = {
-    ("en", "hi"): "Helsinki-NLP/opus-mt-en-hi",
-    ("en", "fr"): "Helsinki-NLP/opus-mt-en-fr",
-    ("en", "es"): "Helsinki-NLP/opus-mt-en-es",
-    ("en", "de"): "Helsinki-NLP/opus-mt-en-de",
-    ("en", "it"): "Helsinki-NLP/opus-mt-en-it",
-    ("en", "ja"): "Helsinki-NLP/opus-mt-en-ja",
-    ("hi", "en"): "Helsinki-NLP/opus-mt-hi-en",
-    ("fr", "en"): "Helsinki-NLP/opus-mt-fr-en",
-    ("es", "en"): "Helsinki-NLP/opus-mt-es-en",
-    ("de", "en"): "Helsinki-NLP/opus-mt-de-en",
-    ("it", "en"): "Helsinki-NLP/opus-mt-it-en",
-    ("ja", "en"): "Helsinki-NLP/opus-mt-ja-en",
-}
+uploaded_file = st.file_uploader("Upload a video", type=["mp4", "mov", "avi"])
 
-uploaded_file = st.file_uploader("Upload a video file", type=["mp4", "mov", "avi", "mkv"])
-target_lang = st.selectbox("Select target language", ["en", "hi", "fr", "es", "de", "it", "ja"],
-                           format_func=lambda x: {"en": "English", "hi": "Hindi", "fr": "French",
-                                                  "es": "Spanish", "de": "German", "it": "Italian",
-                                                  "ja": "Japanese"}[x])
-
-if uploaded_file:
+if uploaded_file is not None:
     st.video(uploaded_file)
+
     if st.button("Generate Dubbed Video"):
-        progress = st.progress(0, text="Starting...")
+        # Save uploaded video to a temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_video:
+            temp_video.write(uploaded_file.read())
+            video_path = temp_video.name
 
-        tmp = tempfile.TemporaryDirectory()
-        video_path = os.path.join(tmp.name, "input.mp4")
-        with open(video_path, "wb") as f:
-            f.write(uploaded_file.read())
-        progress.progress(10, text="Saved video")
-        time.sleep(0.5)
+        # Step 1: Transcribe using Whisper
+        result = whisper_model.transcribe(video_path)
+        detected_lang = result["language"]
+        transcription = result["text"]
 
-        # Extract audio
-        video_clip = mp.VideoFileClip(video_path)
-        audio_path = os.path.join(tmp.name, "audio.wav")
-        video_clip.audio.write_audiofile(audio_path, codec="pcm_s16le")
-        progress.progress(30, text="Extracted audio")
-        time.sleep(0.5)
+        st.subheader("Transcribed text")
+        st.info(f"Detected Language: {detected_lang.upper()} - Transcription: {transcription}")
 
-        # Transcribe
-        stt_res = stt_pipeline(audio_path)
-        input_text = stt_res["text"]
-        detected_lang = stt_res.get("language", "en")
-        st.info(f"Detected Language: {detected_lang.upper()} • Transcription: {input_text}")
-        progress.progress(50, text="Transcribed text")
+        # Step 2: Translate text
+        try:
+            if detected_lang != "en":  # If not English, translate to English first
+                translated = translator(transcription, src_lang=detected_lang, tgt_lang="en")[0]['translation_text']
+            else:
+                translated = transcription
+            st.success(f"Translated: {translated}")
+        except Exception as e:
+            st.error(f"Translation error: {str(e)}")
+            st.stop()
 
-        # Translate if needed
-        if detected_lang == target_lang or (detected_lang, target_lang) not in translation_models:
-            translated = input_text
-            if detected_lang != target_lang:
-                st.warning("No translation model for this pair, using original text.")
-        else:
-            trans = pipeline("translation", model=translation_models[(detected_lang, target_lang)])
-            translated = trans(input_text, max_length=400)[0]["translation_text"]
-            st.success(f"Translated Text: {translated}")
-        progress.progress(70, text="Translated")
+        # Step 3: Convert translated text to speech
+        tts = gTTS(translated, lang="en")
+        audio_path = tempfile.mktemp(suffix=".mp3")
+        tts.save(audio_path)
 
-        # TTS
-        tts = gTTS(translated, lang=target_lang)
-        tts_path = os.path.join(tmp.name, "dubbed.mp3")
-        tts.save(tts_path)
-        progress.progress(80, text="Generated speech")
-        time.sleep(0.5)
+        # Step 4: Merge audio with video
+        final_output = tempfile.mktemp(suffix=".mp4")
+        videoclip = VideoFileClip(video_path)
+        audioclip = AudioFileClip(audio_path)
+        videoclip = videoclip.set_audio(audioclip)
+        videoclip.write_videofile(final_output, codec="libx264", audio_codec="aac")
 
-        # Merge
-        dubbed = mp.AudioFileClip(tts_path)
-        final = video_clip.set_audio(dubbed)
-        output_path = os.path.join(tmp.name, "output.mp4")
-        final.write_videofile(output_path, codec="libx264", audio_codec="aac", verbose=False, logger=None)
-        progress.progress(100, text="Done! Dubbed video ready")
-
-        st.video(output_path)
-        with open(output_path, "rb") as f:
-            st.download_button("Download Dubbed Video", f, file_name="dubbed.mp4", mime="video/mp4")
-
-        tmp.cleanup()
+        # Step 5: Show dubbed video
+        st.video(final_output)
