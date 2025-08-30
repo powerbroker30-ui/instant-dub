@@ -1,8 +1,7 @@
 streamlit
 transformers
 torch
+sentencepiece
 gTTS
-moviepy==1.0.3
-imageio
-imageio-ffmpeg
-openai-whisper
+moviepy
+whisper
